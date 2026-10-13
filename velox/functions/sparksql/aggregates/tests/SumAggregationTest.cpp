@@ -20,6 +20,7 @@
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/functions/lib/aggregates/tests/SumTestBase.h"
+#include "velox/functions/sparksql/SparkQueryConfig.h"
 #include "velox/functions/sparksql/aggregates/DecimalSumAggregate.h"
 #include "velox/functions/sparksql/aggregates/Register.h"
 
@@ -258,6 +259,81 @@ class SumAggregationTest : public SumTestBase {
 
 TEST_F(SumAggregationTest, overflow) {
   SumTestBase::testAggregateOverflow<int64_t, int64_t, int64_t>("spark_sum");
+}
+
+// Runs spark_sum over 'input' with a single aggregation and with a partial and
+// a final aggregation.
+std::vector<core::PlanNodePtr> makeSumPlans(const RowVectorPtr& input) {
+  return {
+      PlanBuilder()
+          .values({input})
+          .singleAggregation({}, {"spark_sum(c0)"})
+          .planNode(),
+      PlanBuilder()
+          .values({input})
+          .partialAggregation({}, {"spark_sum(c0)"})
+          .finalAggregation()
+          .planNode(),
+  };
+}
+
+TEST_F(SumAggregationTest, overflowAnsi) {
+  const auto ansiKey = functions::sparksql::SparkQueryConfig::qualify(
+      functions::sparksql::SparkQueryConfig::kAnsiEnabled);
+  auto input = makeRowVector(
+      {makeFlatVector<int64_t>({std::numeric_limits<int64_t>::max(), 1})});
+  for (const auto& plan : makeSumPlans(input)) {
+    // Without ANSI mode, the sum wraps around.
+    AssertQueryBuilder(plan)
+        .config(ansiKey, "false")
+        .assertResults(makeRowVector(
+            {makeFlatVector<int64_t>({std::numeric_limits<int64_t>::min()})}));
+    // With ANSI mode, the sum throws.
+    VELOX_ASSERT_THROW(
+        AssertQueryBuilder(plan).config(ansiKey, "true").copyResults(pool()),
+        "overflow");
+  }
+
+  // Without overflow, ANSI mode does not change the result.
+  input = makeRowVector({makeFlatVector<int32_t>({1, 2, 3})});
+  for (const auto& plan : makeSumPlans(input)) {
+    AssertQueryBuilder(plan)
+        .config(ansiKey, "true")
+        .assertResults(makeRowVector({makeFlatVector<int64_t>({6})}));
+  }
+}
+
+TEST_F(SumAggregationTest, decimalOverflowAnsi) {
+  const auto ansiKey = functions::sparksql::SparkQueryConfig::qualify(
+      functions::sparksql::SparkQueryConfig::kAnsiEnabled);
+  auto input = makeRowVector({makeFlatVector<int128_t>(
+      {DecimalUtil::kLongDecimalMax, DecimalUtil::kLongDecimalMax},
+      DECIMAL(38, 0))});
+  for (const auto& plan : makeSumPlans(input)) {
+    // Without ANSI mode, the sum returns null.
+    AssertQueryBuilder(plan)
+        .config(ansiKey, "false")
+        .assertResults(makeRowVector({makeNullableFlatVector<int128_t>(
+            {std::nullopt}, DECIMAL(38, 0))}));
+    // With ANSI mode, the sum throws.
+    VELOX_ASSERT_THROW(
+        AssertQueryBuilder(plan).config(ansiKey, "true").copyResults(pool()),
+        "Decimal overflow in sum");
+  }
+
+  // Without overflow, ANSI mode does not change the result. An intermediate
+  // overflow that comes back into range is not an error.
+  input = makeRowVector({makeFlatVector<int128_t>(
+      {DecimalUtil::kLongDecimalMax,
+       DecimalUtil::kLongDecimalMax,
+       DecimalUtil::kLongDecimalMin},
+      DECIMAL(38, 0))});
+  for (const auto& plan : makeSumPlans(input)) {
+    AssertQueryBuilder(plan)
+        .config(ansiKey, "true")
+        .assertResults(makeRowVector({makeFlatVector<int128_t>(
+            {DecimalUtil::kLongDecimalMax}, DECIMAL(38, 0))}));
+  }
 }
 
 TEST_F(SumAggregationTest, hookLimits) {

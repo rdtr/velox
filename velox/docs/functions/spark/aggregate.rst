@@ -241,7 +241,7 @@ General Aggregate Functions
 
     This is an alias for :spark:func:`stddev`.
 
-.. spark:function:: sum(x) -> bigint|double|real
+.. spark:function:: sum(x) -> bigint|double|real (ANSI compliant)
 
     Returns the sum of `x`.
 
@@ -259,6 +259,9 @@ General Aggregate Functions
     For DECIMAL type, when an overflow occurs in the accumulation, it returns NULL. For REAL and DOUBLE type, it
     returns Infinity. For all other input types, when the sum of input values exceeds its limit, it cycles to the
     overflowed value rather than raising an error.
+
+    When Spark ANSI mode is enabled, DECIMAL and integral sums throw an exception on overflow instead. For DECIMAL
+    type, only an overflow of the final result is an error. REAL and DOUBLE sums are not affected.
 
     Example::
 

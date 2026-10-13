@@ -16,6 +16,7 @@
 #include "velox/functions/sparksql/aggregates/SumAggregate.h"
 
 #include "velox/functions/lib/aggregates/SumAggregateBase.h"
+#include "velox/functions/sparksql/SparkQueryConfig.h"
 #include "velox/functions/sparksql/aggregates/DecimalSumAggregate.h"
 
 using namespace facebook::velox::functions::aggregate;
@@ -23,8 +24,15 @@ using namespace facebook::velox::functions::aggregate;
 namespace facebook::velox::functions::aggregate::sparksql {
 
 namespace {
-template <typename TInput, typename TAccumulator, typename ResultType>
-using SumAggregate = SumAggregateBase<TInput, TAccumulator, ResultType, true>;
+// Without ANSI mode, Spark's integer sum wraps around on overflow like Java
+// long arithmetic. With ANSI mode, it throws.
+template <
+    typename TInput,
+    typename TAccumulator,
+    typename ResultType,
+    bool ansiEnabled>
+using SumAggregate =
+    SumAggregateBase<TInput, TAccumulator, ResultType, !ansiEnabled>;
 
 TypePtr getDecimalSumType(const TypePtr& resultType) {
   if (resultType->isRow()) {
@@ -42,6 +50,7 @@ void checkAccumulatorRowType(const TypePtr& type) {
   VELOX_CHECK_EQ(type->childAt(1)->kind(), TypeKind::BOOLEAN);
 }
 
+template <bool throwOnOverflow>
 std::unique_ptr<exec::Aggregate> constructDecimalSumAgg(
     core::AggregationNode::Step step,
     const std::vector<TypePtr>& argTypes,
@@ -52,20 +61,26 @@ std::unique_ptr<exec::Aggregate> constructDecimalSumAgg(
   switch (precision) {
     // The sum precision is calculated from the input precision with the formula
     // min(p + 10, 38). Therefore, the sum precision must >= 11.
-#define PRECISION_CASE(precision)                                         \
-  case precision:                                                         \
-    if (inputType->isShortDecimal() && sumType->isShortDecimal()) {       \
-      return std::make_unique<exec::SimpleAggregateAdapter<               \
-          DecimalSumAggregate<int64_t, int64_t, precision>>>(             \
-          step, argTypes, resultType);                                    \
-    } else if (inputType->isShortDecimal() && sumType->isLongDecimal()) { \
-      return std::make_unique<exec::SimpleAggregateAdapter<               \
-          DecimalSumAggregate<int64_t, int128_t, precision>>>(            \
-          step, argTypes, resultType);                                    \
-    } else {                                                              \
-      return std::make_unique<exec::SimpleAggregateAdapter<               \
-          DecimalSumAggregate<int128_t, int128_t, precision>>>(           \
-          step, argTypes, resultType);                                    \
+#define PRECISION_CASE(precision)                                              \
+  case precision:                                                              \
+    if (inputType->isShortDecimal() && sumType->isShortDecimal()) {            \
+      return std::make_unique<exec::SimpleAggregateAdapter<                    \
+          DecimalSumAggregate<int64_t, int64_t, precision, throwOnOverflow>>>( \
+          step, argTypes, resultType);                                         \
+    } else if (inputType->isShortDecimal() && sumType->isLongDecimal()) {      \
+      return std::make_unique<                                                 \
+          exec::SimpleAggregateAdapter<DecimalSumAggregate<                    \
+              int64_t,                                                         \
+              int128_t,                                                        \
+              precision,                                                       \
+              throwOnOverflow>>>(step, argTypes, resultType);                  \
+    } else {                                                                   \
+      return std::make_unique<                                                 \
+          exec::SimpleAggregateAdapter<DecimalSumAggregate<                    \
+              int128_t,                                                        \
+              int128_t,                                                        \
+              precision,                                                       \
+              throwOnOverflow>>>(step, argTypes, resultType);                  \
     }
     PRECISION_CASE(11)
     PRECISION_CASE(12)
@@ -98,6 +113,76 @@ std::unique_ptr<exec::Aggregate> constructDecimalSumAgg(
 #undef PRECISION_CASE
     default:
       VELOX_UNREACHABLE();
+  }
+}
+template <bool ansiEnabled>
+std::unique_ptr<exec::Aggregate> createSumAggregate(
+    const std::string& name,
+    core::AggregationNode::Step step,
+    const std::vector<TypePtr>& argTypes,
+    const TypePtr& resultType) {
+  VELOX_CHECK_EQ(argTypes.size(), 1, "{} takes only one argument", name);
+  auto inputType = argTypes[0];
+  switch (inputType->kind()) {
+    case TypeKind::TINYINT:
+      return std::make_unique<
+          SumAggregate<int8_t, int64_t, int64_t, ansiEnabled>>(BIGINT());
+    case TypeKind::SMALLINT:
+      return std::make_unique<
+          SumAggregate<int16_t, int64_t, int64_t, ansiEnabled>>(BIGINT());
+    case TypeKind::INTEGER:
+      return std::make_unique<
+          SumAggregate<int32_t, int64_t, int64_t, ansiEnabled>>(BIGINT());
+    case TypeKind::BIGINT: {
+      if (inputType->isShortDecimal()) {
+        return constructDecimalSumAgg<ansiEnabled>(
+            step,
+            argTypes,
+            resultType,
+            inputType,
+            getDecimalSumType(resultType));
+      }
+      return std::make_unique<
+          SumAggregate<int64_t, int64_t, int64_t, ansiEnabled>>(BIGINT());
+    }
+    case TypeKind::HUGEINT: {
+      VELOX_CHECK(inputType->isLongDecimal());
+      // If inputType is long decimal,
+      // its output type is always long decimal.
+      return constructDecimalSumAgg<ansiEnabled>(
+          step, argTypes, resultType, inputType, getDecimalSumType(resultType));
+    }
+    case TypeKind::REAL:
+      if (resultType->kind() == TypeKind::REAL) {
+        return std::make_unique<
+            SumAggregate<float, double, float, ansiEnabled>>(resultType);
+      }
+      return std::make_unique<SumAggregate<float, double, double, ansiEnabled>>(
+          DOUBLE());
+    case TypeKind::DOUBLE:
+      if (resultType->kind() == TypeKind::REAL) {
+        return std::make_unique<
+            SumAggregate<double, double, float, ansiEnabled>>(resultType);
+      }
+      return std::make_unique<
+          SumAggregate<double, double, double, ansiEnabled>>(DOUBLE());
+    case TypeKind::ROW: {
+      VELOX_DCHECK(!exec::isRawInput(step));
+      checkAccumulatorRowType(inputType);
+      // For the intermediate aggregation step, input intermediate sum
+      // type is equal to final result sum type.
+      return constructDecimalSumAgg<ansiEnabled>(
+          step,
+          argTypes,
+          resultType,
+          inputType->childAt(0),
+          inputType->childAt(0));
+    }
+    default:
+      VELOX_UNREACHABLE(
+          "Unknown input type for {} aggregation {}",
+          name,
+          inputType->kindName());
   }
 }
 } // namespace
@@ -144,75 +229,11 @@ exec::AggregateRegistrationResult registerSum(
           core::AggregationNode::Step step,
           const std::vector<TypePtr>& argTypes,
           const TypePtr& resultType,
-          const core::QueryConfig& /*config*/)
-          -> std::unique_ptr<exec::Aggregate> {
-        VELOX_CHECK_EQ(argTypes.size(), 1, "{} takes only one argument", name);
-        auto inputType = argTypes[0];
-        switch (inputType->kind()) {
-          case TypeKind::TINYINT:
-            return std::make_unique<SumAggregate<int8_t, int64_t, int64_t>>(
-                BIGINT());
-          case TypeKind::SMALLINT:
-            return std::make_unique<SumAggregate<int16_t, int64_t, int64_t>>(
-                BIGINT());
-          case TypeKind::INTEGER:
-            return std::make_unique<SumAggregate<int32_t, int64_t, int64_t>>(
-                BIGINT());
-          case TypeKind::BIGINT: {
-            if (inputType->isShortDecimal()) {
-              return constructDecimalSumAgg(
-                  step,
-                  argTypes,
-                  resultType,
-                  inputType,
-                  getDecimalSumType(resultType));
-            }
-            return std::make_unique<SumAggregate<int64_t, int64_t, int64_t>>(
-                BIGINT());
-          }
-          case TypeKind::HUGEINT: {
-            VELOX_CHECK(inputType->isLongDecimal());
-            // If inputType is long decimal,
-            // its output type is always long decimal.
-            return constructDecimalSumAgg(
-                step,
-                argTypes,
-                resultType,
-                inputType,
-                getDecimalSumType(resultType));
-          }
-          case TypeKind::REAL:
-            if (resultType->kind() == TypeKind::REAL) {
-              return std::make_unique<SumAggregate<float, double, float>>(
-                  resultType);
-            }
-            return std::make_unique<SumAggregate<float, double, double>>(
-                DOUBLE());
-          case TypeKind::DOUBLE:
-            if (resultType->kind() == TypeKind::REAL) {
-              return std::make_unique<SumAggregate<double, double, float>>(
-                  resultType);
-            }
-            return std::make_unique<SumAggregate<double, double, double>>(
-                DOUBLE());
-          case TypeKind::ROW: {
-            VELOX_DCHECK(!exec::isRawInput(step));
-            checkAccumulatorRowType(inputType);
-            // For the intermediate aggregation step, input intermediate sum
-            // type is equal to final result sum type.
-            return constructDecimalSumAgg(
-                step,
-                argTypes,
-                resultType,
-                inputType->childAt(0),
-                inputType->childAt(0));
-          }
-          default:
-            VELOX_UNREACHABLE(
-                "Unknown input type for {} aggregation {}",
-                name,
-                inputType->kindName());
+          const core::QueryConfig& config) -> std::unique_ptr<exec::Aggregate> {
+        if (functions::sparksql::SparkQueryConfig{config}.ansiEnabled()) {
+          return createSumAggregate<true>(name, step, argTypes, resultType);
         }
+        return createSumAggregate<false>(name, step, argTypes, resultType);
       },
       withCompanionFunctions,
       overwrite);
