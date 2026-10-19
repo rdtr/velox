@@ -34,7 +34,6 @@ SparkQueryConfig::registeredProperties() {
     VELOX_REGISTER_SPARK_CONFIG(kLegacyDateFormatter);
     VELOX_REGISTER_SPARK_CONFIG(kLegacyStatisticalAggregate);
     VELOX_REGISTER_SPARK_CONFIG(kJsonIgnoreNullFields);
-    VELOX_REGISTER_SPARK_CONFIG(kCollectListIgnoreNulls);
     VELOX_REGISTER_SPARK_CONFIG(kDecimalToFloatHighPrecisionCastEnabled);
 
 #undef VELOX_REGISTER_SPARK_CONFIG

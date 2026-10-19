@@ -70,15 +70,16 @@ General Aggregate Functions
 
     ``hash`` cannot be null.
 
-.. spark:function:: collect_list(x) -> array<[same as x]>
+.. spark:function:: collect_list(x [, ignoreNulls]) -> array<[same as x]>
 
     Returns an array created from the input ``x`` elements. By default,
     ignores null inputs and returns an empty array when all inputs are null.
 
-    When the configuration property ``spark.collect_list.ignore_nulls`` is set
-    to ``false``, null values are included in the output array (RESPECT NULLS
-    behavior). In this mode, an all-null input produces an array of nulls
-    instead of an empty array.
+    ``ignoreNulls`` must be a constant boolean. When it is ``false`` (Spark's
+    RESPECT NULLS), null values are included in the output array, and an
+    all-null input produces an array of nulls instead of an empty array.
+    When it is ``true`` or omitted (Spark's IGNORE NULLS, the default), nulls
+    are ignored.
 
 .. spark:function:: collect_set(x [, ignoreNulls]) -> array<[same as x]>
 

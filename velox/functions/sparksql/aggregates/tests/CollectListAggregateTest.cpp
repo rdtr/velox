@@ -124,12 +124,17 @@ TEST_F(CollectListAggregateTest, allNullsInput) {
       {});
 }
 
-std::unordered_map<std::string, std::string> makeConfig(bool ignoreNulls) {
-  return {{"spark.collect_list.ignore_nulls", ignoreNulls ? "true" : "false"}};
+TEST_F(CollectListAggregateTest, ignoreNullsArgument) {
+  // ignoreNulls = true (IGNORE NULLS) is the same as the one-argument form.
+  auto input = makeRowVector({makeNullableFlatVector<int32_t>(
+      {1, 2, std::nullopt, 4, std::nullopt, 6})});
+  auto expected =
+      makeRowVector({makeArrayVectorFromJson<int32_t>({"[1, 2, 4, 6]"})});
+  testAggregations({input}, {}, {"spark_collect_list(c0, true)"}, {expected});
 }
 
 TEST_F(CollectListAggregateTest, respectNulls) {
-  // When ignoreNulls is false (RESPECT NULLS), nulls should be included.
+  // With ignoreNulls = false (RESPECT NULLS), nulls are included.
   auto input = makeRowVector({makeNullableFlatVector<int32_t>(
       {1, 2, std::nullopt, 4, std::nullopt, 6})});
   auto expected = makeRowVector({makeNullableArrayVector<int32_t>(
@@ -137,11 +142,7 @@ TEST_F(CollectListAggregateTest, respectNulls) {
           {1, 2, std::nullopt, 4, std::nullopt, 6}})});
   std::vector<RowVectorPtr> expectedResult{expected};
   testAggregations(
-      {input},
-      {},
-      {"spark_collect_list(c0)"},
-      expectedResult,
-      makeConfig(false));
+      {input}, {}, {"spark_collect_list(c0, false)"}, expectedResult);
 }
 
 TEST_F(CollectListAggregateTest, respectNullsGroupBy) {
@@ -157,10 +158,9 @@ TEST_F(CollectListAggregateTest, respectNullsGroupBy) {
   testAggregations(
       {data},
       {"c0"},
-      {"spark_collect_list(c1)"},
+      {"spark_collect_list(c1, false)"},
       {"c0", "a0"},
-      expectedResult,
-      makeConfig(false));
+      expectedResult);
 }
 
 TEST_F(CollectListAggregateTest, respectNullsAllNulls) {
@@ -172,11 +172,7 @@ TEST_F(CollectListAggregateTest, respectNullsAllNulls) {
           {std::nullopt, std::nullopt, std::nullopt}})});
   std::vector<RowVectorPtr> expectedResult{expected};
   testAggregations(
-      {input},
-      {},
-      {"spark_collect_list(c0)"},
-      expectedResult,
-      makeConfig(false));
+      {input}, {}, {"spark_collect_list(c0, false)"}, expectedResult);
 }
 } // namespace
 } // namespace facebook::velox::functions::aggregate::sparksql::test
