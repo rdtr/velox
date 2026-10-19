@@ -219,6 +219,19 @@ Array Functions
 
         SELECT arrays_zip(ARRAY[1, 2], ARRAY['1b', null, '3b']); -- [ROW(1, '1b'), ROW(2, null), ROW(null, '3b')]
 
+.. spark:function:: checked_get(array(E), index) -> E
+
+    Returns an element of the array at the specified 0-based ``index``.
+    Throws an error if ``index`` is negative or points outside of the array
+    boundaries. ``index`` must be of an integral type. Corresponds to Spark's
+    ``array[index]`` with ANSI mode enabled. ::
+
+        SELECT checked_get(array(1, 2, 3), 0); -- 1
+        SELECT checked_get(array(1, 2, 3), 3); -- error
+        SELECT checked_get(array(1, 2, 3), -1); -- error
+        SELECT checked_get(array(1, 2, 3), NULL); -- NULL
+        SELECT checked_get(array(1, 2, NULL), 2); -- NULL
+
 .. spark:function:: concat(array1, array2, ..., arrayN) -> array
 
     Concatenates the arrays ``array1``, ``array2``, ..., ``arrayN``. All parameters have the same type.

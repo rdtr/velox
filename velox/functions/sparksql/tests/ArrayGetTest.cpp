@@ -15,6 +15,7 @@
  */
 
 #include <optional>
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/functions/sparksql/tests/SparkFunctionBaseTest.h"
 
 using namespace facebook::velox;
@@ -29,10 +30,11 @@ class ArrayGetTest : public SparkFunctionBaseTest {
   template <typename T, typename IndexType>
   std::optional<T> arrayGet(
       const ArrayVectorPtr& arrayVector,
-      const std::optional<IndexType>& index) {
+      const std::optional<IndexType>& index,
+      const std::string& functionName = "get") {
     auto input =
         makeRowVector({arrayVector, makeConstant(index, arrayVector->size())});
-    return evaluateOnce<T>("get(c0, c1)", input);
+    return evaluateOnce<T>(fmt::format("{}(c0, c1)", functionName), input);
   }
 
   template <typename IndexType>
@@ -60,6 +62,28 @@ TEST_F(ArrayGetTest, basic) {
   testArrayGet<int16_t>();
   testArrayGet<int32_t>();
   testArrayGet<int64_t>();
+}
+
+TEST_F(ArrayGetTest, checkedGet) {
+  auto arrayVector = makeNullableArrayVector<int32_t>({{1, std::nullopt, 2}});
+  auto checkedGet = [&](std::optional<int64_t> index) {
+    return arrayGet<int32_t, int64_t>(arrayVector, index, "checked_get");
+  };
+
+  EXPECT_EQ(checkedGet(0), 1);
+  EXPECT_EQ(checkedGet(1), std::nullopt);
+  EXPECT_EQ(checkedGet(2), 2);
+  EXPECT_EQ(checkedGet(std::nullopt), std::nullopt);
+
+  // get returns NULL for these indices, checked_get throws.
+  VELOX_ASSERT_THROW(
+      checkedGet(-1), "Array subscript index cannot be negative");
+  VELOX_ASSERT_THROW(checkedGet(3), "Array subscript index out of bounds");
+
+  // All integer index types are supported.
+  EXPECT_EQ((arrayGet<int32_t, int8_t>(arrayVector, 2, "checked_get")), 2);
+  EXPECT_EQ((arrayGet<int32_t, int16_t>(arrayVector, 2, "checked_get")), 2);
+  EXPECT_EQ((arrayGet<int32_t, int32_t>(arrayVector, 2, "checked_get")), 2);
 }
 } // namespace
 } // namespace facebook::velox::functions::sparksql::test

@@ -250,6 +250,7 @@ void registerArrayFunctions(const std::string& prefix) {
       Generic<T1>,
       bool>({prefix + "array_insert"});
   VELOX_REGISTER_VECTOR_FUNCTION(udf_array_get, prefix + "get");
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_checked_array_get, prefix + "checked_get");
   exec::registerStatefulVectorFunction(
       prefix + "shuffle",
       arrayShuffleWithCustomSeedSignatures(),

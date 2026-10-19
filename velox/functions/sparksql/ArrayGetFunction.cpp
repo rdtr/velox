@@ -20,19 +20,21 @@ namespace facebook::velox::functions::sparksql {
 
 namespace {
 
-// get(array, index) -> array[index]
+// get(array, index) and checked_get(array, index) -> array[index]
 //
-// - allows negative indices for arrays (returns NULL if index < 0).
-// - allows out of bounds accesses for arrays (returns NULL if out of
-//    bounds).
-// - index starts at 0 for arrays.
+// Spark's GetArrayItem: `get` and `arr[i]` with ANSI mode disabled, or `arr[i]`
+// with ANSI mode enabled. The index starts at 0.
+// - get: returns NULL for a negative or out-of-bounds index.
+// - checked_get: throws for a negative or out-of-bounds index.
+template <bool failOnError>
 class ArrayGetFunction : public SubscriptImpl<
-                             /* allowNegativeIndices */ true,
-                             /* nullOnNegativeIndices */ true,
-                             /* allowOutOfBound */ true,
+                             /* allowNegativeIndices */ !failOnError,
+                             /* nullOnNegativeIndices */ !failOnError,
+                             /* allowOutOfBound */ !failOnError,
                              /* indexStartsAtOne */ false> {
  public:
-  explicit ArrayGetFunction() : SubscriptImpl(false) {}
+  ArrayGetFunction()
+      : SubscriptImpl<!failOnError, !failOnError, !failOnError, false>(false) {}
 
   static std::vector<std::shared_ptr<exec::FunctionSignature>> signatures() {
     std::vector<std::shared_ptr<exec::FunctionSignature>> signatures;
@@ -55,7 +57,12 @@ class ArrayGetFunction : public SubscriptImpl<
 
 VELOX_DECLARE_VECTOR_FUNCTION(
     udf_array_get,
-    ArrayGetFunction::signatures(),
-    std::make_unique<ArrayGetFunction>());
+    ArrayGetFunction<false>::signatures(),
+    std::make_unique<ArrayGetFunction<false>>());
+
+VELOX_DECLARE_VECTOR_FUNCTION(
+    udf_checked_array_get,
+    ArrayGetFunction<true>::signatures(),
+    std::make_unique<ArrayGetFunction<true>>());
 
 } // namespace facebook::velox::functions::sparksql
