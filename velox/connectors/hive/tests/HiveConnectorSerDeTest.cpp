@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
@@ -197,6 +198,43 @@ TEST_F(HiveConnectorSerDeTest, hiveColumnHandle) {
 
     testSerde(*columnHandle);
   }
+}
+
+TEST_F(HiveConnectorSerDeTest, hiveColumnHandleWithDefaultValue) {
+  auto type = ROW({{"a", BIGINT()}, {"b", ARRAY(VARCHAR())}});
+  auto defaultValue = Variant::row(
+      {Variant(int64_t{1}),
+       Variant::array({Variant::create<TypeKind::VARCHAR>("x")})});
+  HiveColumnHandle columnHandle(
+      "c0",
+      FileColumnHandle::ColumnType::kRegular,
+      type,
+      type,
+      {},
+      {},
+      {},
+      /*postProcessor=*/nullptr,
+      defaultValue);
+  ASSERT_NE(columnHandle.toString().find("defaultValue"), std::string::npos);
+  testSerde(columnHandle);
+
+  auto clone =
+      ISerializable::deserialize<HiveColumnHandle>(columnHandle.serialize());
+  ASSERT_TRUE(clone->defaultValue().has_value());
+  ASSERT_EQ(*clone->defaultValue(), defaultValue);
+
+  VELOX_ASSERT_USER_THROW(
+      HiveColumnHandle(
+          "c1",
+          FileColumnHandle::ColumnType::kRegular,
+          BIGINT(),
+          BIGINT(),
+          {},
+          {},
+          {},
+          /*postProcessor=*/nullptr,
+          Variant::create<TypeKind::VARCHAR>("x")),
+      "Default value does not match the column type BIGINT: c1");
 }
 
 TEST_F(HiveConnectorSerDeTest, locationHandle) {

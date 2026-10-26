@@ -38,6 +38,7 @@ HiveSplitReader::HiveSplitReader(
     const std::shared_ptr<common::ScanSpec>& scanSpec,
     const std::unordered_map<std::string, connector::FileColumnHandlePtr>*
         infoColumns,
+    const std::unordered_map<std::string, VectorPtr>* defaultValues,
     std::vector<column_index_t> bucketChannels,
     const common::SubfieldFilters* subfieldFiltersForValidation)
     : connector::FileSplitReader(
@@ -55,7 +56,8 @@ HiveSplitReader::HiveSplitReader(
           scanSpec,
           subfieldFiltersForValidation),
       hiveSplit_(hiveSplit),
-      infoColumns_(infoColumns) {
+      infoColumns_(infoColumns),
+      defaultValues_(defaultValues) {
   if (!bucketChannels.empty()) {
     bucketChannels_ = {bucketChannels.begin(), bucketChannels.end()};
     partitionFunction_ = std::make_unique<HivePartitionFunction>(
@@ -144,7 +146,18 @@ std::vector<TypePtr> HiveSplitReader::adaptColumns(
     } else if (
         childSpec->columnType() == common::ScanSpec::ColumnType::kRegular) {
       auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
-      if (!fileTypeIdx.has_value()) {
+      const VectorPtr* defaultValue{nullptr};
+      if (!fileTypeIdx.has_value() && defaultValues_ != nullptr) {
+        if (auto it = defaultValues_->find(fieldName);
+            it != defaultValues_->end()) {
+          defaultValue = &it->second;
+        }
+      }
+      if (defaultValue != nullptr) {
+        // Column is missing from the file and has a default value, e.g. it
+        // was added to the table later with a default.
+        childSpec->setConstantValue(*defaultValue);
+      } else if (!fileTypeIdx.has_value()) {
         auto outputTypeIdx = readerOutputType_->getChildIdxIfExists(fieldName);
         TypePtr fieldType;
         if (outputTypeIdx.has_value()) {
