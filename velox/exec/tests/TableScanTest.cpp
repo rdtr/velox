@@ -1337,6 +1337,109 @@ TEST_F(TableScanTest, missingColumns) {
   assertQuery(op, filePaths, "SELECT * FROM tmp", 0);
 }
 
+TEST_F(TableScanTest, missingColumnsWithDefaultValue) {
+  // Simulate adding columns with default values. The old file has only c0. The
+  // new file has c0 to c4, with a NULL for c1 in its second row. The decimal
+  // columns c5 and c6 are in neither file, because the DWRF writer does not
+  // support decimals. c4 has no default value.
+  auto filePaths = makeFilePaths(2);
+  writeToFile(
+      filePaths[0]->getPath(),
+      {makeRowVector({"c0"}, {makeFlatVector<int64_t>({1, 2})})});
+  writeToFile(
+      filePaths[1]->getPath(),
+      {makeRowVector(
+          {"c0", "c1", "c2", "c3", "c4"},
+          {
+              makeFlatVector<int64_t>({3, 4}),
+              makeNullableFlatVector<int32_t>({7, std::nullopt}),
+              makeFlatVector<std::string>({"y", "z"}),
+              makeArrayVectorFromJson<int32_t>({"[3]", "[4]"}),
+              makeFlatVector<double>({0.5, 1.5}),
+          })});
+
+  auto dataColumns =
+      ROW({"c0", "c1", "c2", "c3", "c4", "c5", "c6"},
+          {BIGINT(),
+           INTEGER(),
+           VARCHAR(),
+           ARRAY(INTEGER()),
+           DOUBLE(),
+           DECIMAL(10, 2),
+           DECIMAL(20, 1)});
+
+  const auto columnWithDefault =
+      [](const std::string& name, const TypePtr& type, Variant defaultValue) {
+        return std::make_shared<HiveColumnHandle>(
+            name,
+            HiveColumnHandle::ColumnType::kRegular,
+            type,
+            type,
+            std::vector<common::Subfield>{},
+            std::vector<NamedExtraction>{},
+            HiveColumnHandle::ColumnParseParameters{},
+            /*postProcessor=*/nullptr,
+            std::move(defaultValue));
+      };
+  connector::ColumnHandleMap assignments{
+      {"c0", regularColumn("c0", BIGINT())},
+      {"c1", columnWithDefault("c1", INTEGER(), Variant(42))},
+      {"c2",
+       columnWithDefault(
+           "c2", VARCHAR(), Variant::create<TypeKind::VARCHAR>("x"))},
+      {"c3",
+       columnWithDefault(
+           "c3", ARRAY(INTEGER()), Variant::array({Variant(1), Variant(2)}))},
+      {"c4", regularColumn("c4", DOUBLE())},
+      {"c5", columnWithDefault("c5", DECIMAL(10, 2), Variant(int64_t{150}))},
+      {"c6",
+       columnWithDefault(
+           "c6", DECIMAL(20, 1), Variant::create<TypeKind::HUGEINT>(25))},
+  };
+
+  auto plan = PlanBuilder(pool_.get())
+                  .startTableScan()
+                  .outputType(dataColumns)
+                  .dataColumns(dataColumns)
+                  .assignments(assignments)
+                  .endTableScan()
+                  .planNode();
+  auto expected = makeRowVector(
+      {"c0", "c1", "c2", "c3", "c4", "c5", "c6"},
+      {
+          makeFlatVector<int64_t>({1, 2, 3, 4}),
+          makeNullableFlatVector<int32_t>({42, 42, 7, std::nullopt}),
+          makeFlatVector<std::string>({"x", "x", "y", "z"}),
+          makeArrayVectorFromJson<int32_t>({"[1, 2]", "[1, 2]", "[3]", "[4]"}),
+          makeNullableFlatVector<double>(
+              {std::nullopt, std::nullopt, 0.5, 1.5}),
+          makeFlatVector<int64_t>({150, 150, 150, 150}, DECIMAL(10, 2)),
+          makeFlatVector<int128_t>({25, 25, 25, 25}, DECIMAL(20, 1)),
+      });
+  AssertQueryBuilder(plan)
+      .splits(makeHiveConnectorSplits(filePaths))
+      .assertResults(expected);
+
+  // A filter on a column with a default value is tested against the default.
+  const auto filterOnC1 = [&](const std::string& filter) {
+    return PlanBuilder(pool_.get())
+        .startTableScan()
+        .outputType(ROW({"c0"}, {BIGINT()}))
+        .dataColumns(dataColumns)
+        .subfieldFilter(filter)
+        .assignments({{"c0", regularColumn("c0", BIGINT())}})
+        .filterColumnHandles({columnWithDefault("c1", INTEGER(), Variant(42))})
+        .endTableScan()
+        .planNode();
+  };
+  AssertQueryBuilder(filterOnC1("c1 = 42"))
+      .splits(makeHiveConnectorSplits(filePaths))
+      .assertResults(makeRowVector({makeFlatVector<int64_t>({1, 2})}));
+  AssertQueryBuilder(filterOnC1("c1 = 7"))
+      .splits(makeHiveConnectorSplits(filePaths))
+      .assertResults(makeRowVector({makeFlatVector<int64_t>({3})}));
+}
+
 TEST_F(TableScanTest, missingColumnsInRepeatedColumns) {
   constexpr int kSize = 10;
   auto bigints = makeFlatIdentityVector<int64_t>(kSize);

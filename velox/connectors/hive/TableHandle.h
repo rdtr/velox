@@ -22,6 +22,7 @@
 #include "velox/type/Filter.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
+#include "velox/type/Variant.h"
 
 namespace facebook::velox::connector::hive {
 
@@ -45,6 +46,9 @@ class HiveColumnHandle : public FileColumnHandle {
   /// extraction is present, 'dataType' is that extraction's dataType.  When
   /// multiple extractions are present, 'dataType' is a ROW type whose fields
   /// are the outputNames with their corresponding dataTypes.
+  ///
+  /// 'defaultValue' is the value of a regular column for files that do not
+  /// contain it. See defaultValue().
   HiveColumnHandle(
       const std::string& name,
       ColumnType columnType,
@@ -53,7 +57,8 @@ class HiveColumnHandle : public FileColumnHandle {
       std::vector<common::Subfield> requiredSubfields = {},
       std::vector<NamedExtraction> extractions = {},
       ColumnParseParameters columnParseParameters = {},
-      std::function<void(VectorPtr&)> postProcessor = {});
+      std::function<void(VectorPtr&)> postProcessor = {},
+      std::optional<Variant> defaultValue = std::nullopt);
 
   /// Legacy constructor without extractions for backward compatibility.
   HiveColumnHandle(
@@ -151,6 +156,14 @@ class HiveColumnHandle : public FileColumnHandle {
     return postProcessor_;
   }
 
+  /// Value of this column for rows read from a file that does not contain the
+  /// column, e.g. a column added to the table later with a default value
+  /// (Spark's EXISTS_DEFAULT). When not set, these rows are NULL. Only
+  /// supported for regular columns without extractions.
+  const std::optional<Variant>& defaultValue() const {
+    return defaultValue_;
+  }
+
   std::string toString() const override;
 
   folly::dynamic serialize() const override;
@@ -174,6 +187,7 @@ class HiveColumnHandle : public FileColumnHandle {
   const std::vector<NamedExtraction> extractions_;
   const ColumnParseParameters columnParseParameters_;
   const std::function<void(VectorPtr&)> postProcessor_;
+  const std::optional<Variant> defaultValue_;
 };
 
 using HiveColumnHandlePtr = std::shared_ptr<const HiveColumnHandle>;

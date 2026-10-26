@@ -119,7 +119,8 @@ HiveColumnHandle::HiveColumnHandle(
     std::vector<common::Subfield> requiredSubfields,
     std::vector<NamedExtraction> extractions,
     ColumnParseParameters columnParseParameters,
-    std::function<void(VectorPtr&)> postProcessor)
+    std::function<void(VectorPtr&)> postProcessor,
+    std::optional<Variant> defaultValue)
     : name_(name),
       columnType_(columnType),
       dataType_(std::move(dataType)),
@@ -127,11 +128,28 @@ HiveColumnHandle::HiveColumnHandle(
       requiredSubfields_(std::move(requiredSubfields)),
       extractions_(std::move(extractions)),
       columnParseParameters_(columnParseParameters),
-      postProcessor_(std::move(postProcessor)) {
+      postProcessor_(std::move(postProcessor)),
+      defaultValue_(std::move(defaultValue)) {
   VELOX_USER_CHECK(
       extractions_.empty() || requiredSubfields_.empty(),
       "Extractions and requiredSubfields are mutually exclusive on column: {}",
       name_);
+
+  if (defaultValue_.has_value()) {
+    VELOX_USER_CHECK(
+        columnType_ == ColumnType::kRegular,
+        "Default value is only supported for regular columns: {}",
+        name_);
+    VELOX_USER_CHECK(
+        extractions_.empty(),
+        "Default value is not supported with extractions: {}",
+        name_);
+    VELOX_USER_CHECK(
+        defaultValue_->isTypeCompatible(hiveType_),
+        "Default value does not match the column type {}: {}",
+        hiveType_->toString(),
+        name_);
+  }
 
   if (extractions_.empty()) {
     // No extractions: dataType and hiveType must match (existing behavior).
@@ -173,6 +191,9 @@ folly::dynamic HiveColumnHandle::serialize() const {
       extractions.push_back(serializeNamedExtraction(extraction));
     }
     obj["extractions"] = extractions;
+  }
+  if (defaultValue_.has_value()) {
+    obj["defaultValue"] = defaultValue_->serialize();
   }
   return obj;
 }
@@ -237,6 +258,9 @@ std::string HiveColumnHandle::toStringFields() const {
     }
     out << "]";
   }
+  if (defaultValue_.has_value()) {
+    out << ", defaultValue: " << defaultValue_->toString(hiveType_);
+  }
   return out.str();
 }
 
@@ -265,13 +289,21 @@ ColumnHandlePtr HiveColumnHandle::create(const folly::dynamic& obj) {
     }
   }
 
+  std::optional<Variant> defaultValue;
+  if (auto it = obj.find("defaultValue"); it != obj.items().end()) {
+    defaultValue = Variant::create(it->second);
+  }
+
   return std::make_shared<HiveColumnHandle>(
       name,
       columnType,
       dataType,
       hiveType,
       std::move(requiredSubfields),
-      std::move(extractions));
+      std::move(extractions),
+      ColumnParseParameters{},
+      /*postProcessor=*/nullptr,
+      std::move(defaultValue));
 }
 
 void HiveColumnHandle::registerSerDe() {

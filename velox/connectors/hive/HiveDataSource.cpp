@@ -41,7 +41,28 @@ HiveDataSource::HiveDataSource(
           ioExecutor,
           connectorQueryCtx,
           hiveConfig),
-      hiveConfig_(hiveConfig) {}
+      hiveConfig_(hiveConfig) {
+  const auto addDefaultValue = [&](const ColumnHandlePtr& columnHandle) {
+    auto handle =
+        std::dynamic_pointer_cast<const HiveColumnHandle>(columnHandle);
+    if (handle == nullptr || !handle->defaultValue().has_value()) {
+      return;
+    }
+    defaultValues_.emplace(
+        handle->name(),
+        BaseVector::createConstant(
+            handle->hiveType(),
+            *handle->defaultValue(),
+            1,
+            connectorQueryCtx_->memoryPool()));
+  };
+  for (const auto& [_, handle] : assignments) {
+    addDefaultValue(handle);
+  }
+  for (const auto& handle : tableHandle_->filterColumnHandles()) {
+    addDefaultValue(handle);
+  }
+}
 
 std::vector<column_index_t> HiveDataSource::setupBucketConversion() {
   auto hiveSplit = checkedPointerCast<const HiveConnectorSplit>(split_);
@@ -151,6 +172,7 @@ std::unique_ptr<FileSplitReader> HiveDataSource::createSplitReader() {
       ioExecutor_,
       scanSpec_,
       &infoColumns_,
+      &defaultValues_,
       std::move(bucketChannels),
       /*subfieldFiltersForValidation=*/&filters_);
 }

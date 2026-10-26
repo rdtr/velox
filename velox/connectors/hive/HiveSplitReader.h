@@ -44,6 +44,7 @@ class HiveSplitReader : public FileSplitReader {
       folly::Executor* ioExecutor,
       const std::shared_ptr<common::ScanSpec>& scanSpec,
       const std::unordered_map<std::string, FileColumnHandlePtr>* infoColumns,
+      const std::unordered_map<std::string, VectorPtr>* defaultValues,
       std::vector<column_index_t> bucketChannels = {},
       const common::SubfieldFilters* subfieldFiltersForValidation = nullptr);
 
@@ -86,6 +87,9 @@ class HiveSplitReader : public FileSplitReader {
 
   const std::unordered_map<std::string, FileColumnHandlePtr>* infoColumns_{
       nullptr};
+  // Values for columns missing from the file, keyed by table column name. See
+  // HiveColumnHandle::defaultValue().
+  const std::unordered_map<std::string, VectorPtr>* defaultValues_{nullptr};
   folly::F14FastSet<column_index_t> bucketChannels_;
   std::unique_ptr<HivePartitionFunction> partitionFunction_;
   std::vector<uint32_t> partitions_;

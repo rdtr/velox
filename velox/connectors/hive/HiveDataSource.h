@@ -74,6 +74,10 @@ class HiveDataSource : public FileDataSource {
 
   const std::shared_ptr<HiveConfig> hiveConfig_;
 
+  // Constant vectors made from HiveColumnHandle::defaultValue(), keyed by
+  // table column name. Used for columns missing from a file.
+  std::unordered_map<std::string, VectorPtr> defaultValues_;
+
   int64_t numBucketConversion_ = 0;
 
   // Tracks the number of splits read per file format.
